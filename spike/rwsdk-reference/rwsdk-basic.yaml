@@ -1,0 +1,20 @@
+# Template definition for VibeSDK's template system
+# Place at: vibesdk-templates/definitions/rwsdk-basic.yaml
+# Overlay directory: vibesdk-templates/definitions/rwsdk-basic/
+# Base reference: vibesdk-templates/reference/rwsdk-reference/
+
+name: "rwsdk-basic"
+description: "Full-stack RedwoodSDK app with React Server Components and D1 database on Cloudflare Workers"
+base_reference: "rwsdk-reference"
+projectType: app
+
+# NOTE: rwsdk needs its own base reference (rwsdk-reference) because it uses a
+# fundamentally different architecture than vite-reference:
+# - Entry point: src/worker.tsx with defineApp() (not worker/index.ts with Hono)
+# - Build: rwsdk/vite + @cloudflare/vite-plugin (not standard Vite)
+# - Rendering: React Server Components (not client-side SPA)
+# - Routing: rwsdk/router (not React Router)
+# - Config: vite.config.mts (not .ts)
+
+package_patches:
+  name: "rwsdk-basic"
