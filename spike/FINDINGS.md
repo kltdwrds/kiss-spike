@@ -8,9 +8,9 @@
 |-------|----------|--------|------------|
 | 1. Code Generation | Can Claude generate valid rwsdk code? | **YES** — 3/3 apps built first try | HIGH |
 | 2. Deployment | Can we deploy to Cloudflare programmatically? | **YES** — Workers + D1 via API work | HIGH |
-| 3. GitHub Copilot | Can we use Copilot for code iteration? | **SKIP** — No API, high latency, not needed | N/A |
+| 3. GitHub APIs | Can we manage repos/PRs programmatically? | **YES** — Full lifecycle works, Copilot optional | HIGH |
 
-**Bottom line: KISS is viable.** The two critical unknowns (code gen + deploy) are validated. An MVP can be built using Claude API for generation and Cloudflare Workers API for deployment.
+**Bottom line: KISS is viable.** All three unknowns are validated. An MVP can be built using Claude API for generation, Cloudflare Workers API for deployment, and GitHub APIs for the git workflow.
 
 ---
 
@@ -90,48 +90,67 @@
 
 ---
 
-## Spike 3: GitHub Copilot (findings-github.md)
+## Spike 3: GitHub APIs & Copilot (findings-github.md)
 
-### What We Found
-- **No dedicated Copilot coding agent API** — triggered via standard issue assignment
-- The "Tasks" UI has no public API
-- Copilot takes 10-30+ minutes to produce a PR
-- No way to monitor agent progress or stop it mid-run
-- Requires Copilot Enterprise ($39/user/mo)
+### What We Tested
+- Template repo creation + generation from template
+- Full PR lifecycle: create branch → push files → open PR → comment → close
+- Issue management: create, assign, comment, close
+- Copilot coding agent assignment
 
-### Recommendation
-**Skip Copilot for MVP.** Using Claude API directly is:
-- Faster (seconds vs minutes)
-- Cheaper ($0.01 vs $39/user/mo)
-- More controllable (structured output, error handling)
-- Sufficient for the use case
+### Results
+| Operation | Status | Notes |
+|-----------|--------|-------|
+| Create/generate from template | WORKS | Full repo cloned from template |
+| Create branch + push files | WORKS | Via Git refs + Contents API |
+| Open/close PRs | WORKS | Full lifecycle |
+| Create/comment on issues | WORKS | For iteration workflow |
+| Assign Copilot to issue | NOT TESTED | Requires Copilot Pro+ plan |
 
-Copilot could be a future add-on for a "git-native iteration" workflow where users modify generated apps through GitHub issues.
+### Key Findings
+- **Standard GitHub APIs cover the entire KISS workflow** — no Copilot-specific APIs needed
+- Template repos work perfectly for project scaffolding
+- For pushing many files, Git Data API (trees + commits) is more efficient than Contents API (one file per request)
+- Copilot is optional: adds iteration via issue assignment but with 10-30min latency and $39/mo cost
+- Fine-grained PATs with repo-level scoping work well for security
+
+### KISS Git Workflow
+```
+1. POST /repos/{template}/generate       → Create user's repo
+2. POST /repos/{repo}/git/refs           → Create branch
+3. PUT  /repos/{repo}/contents/{file}    → Push generated code
+4. POST /repos/{repo}/pulls              → Open PR
+5. POST /repos/{repo}/issues/{n}/comments → Add instructions
+```
 
 ---
 
 ## Recommended MVP Architecture
 
 ```
-User → KISS UI → Claude API (generate code) → Cloudflare API (deploy)
+User → KISS UI → Claude API (generate code) → GitHub API (repo + PR)
+                                              → Cloudflare API (deploy)
                                                 ├── Worker (app)
                                                 └── D1 (database)
 ```
 
 ### Components
-1. **KISS Frontend**: Form to describe the app, shows preview URL
-2. **KISS Backend**: Orchestrator that calls Claude API + Cloudflare API
+1. **KISS Frontend**: Form to describe the app, shows preview URL + GitHub repo
+2. **KISS Backend**: Orchestrator that calls Claude API + GitHub API + Cloudflare API
 3. **System Prompt**: Curated rwsdk reference (~15KB), maintained as rwsdk evolves
-4. **Preview Workers**: One per generated app, auto-named, with D1 binding
-5. **Cleanup Job**: TTL-based deletion of old previews
+4. **Template Repo**: rwsdk skeleton (package.json, vite config, tsconfig, etc.)
+5. **Preview Workers**: One per generated app, auto-named, with D1 binding
+6. **Cleanup Job**: TTL-based deletion of old previews + repos
 
 ### Flow
 1. User describes app in natural language
 2. Backend sends prompt to Claude Sonnet with rwsdk system prompt
 3. Claude returns JSON with file array
-4. Backend writes files, runs `npm install && vite build`
-5. Backend uploads Worker bundle + creates D1 + runs schema
-6. Returns live preview URL to user
+4. Backend creates GitHub repo from template, pushes generated code, opens PR
+5. Backend runs `npm install && vite build` (in build environment)
+6. Backend uploads Worker bundle + creates D1 + runs schema via Cloudflare API
+7. Returns live preview URL + GitHub repo link to user
+8. User iterates by describing changes → new Claude call → new PR
 
 ### Open Questions for MVP
 1. **Build environment**: Where does `npm install && vite build` run? Options: server-side (Lambda/container), Cloudflare Worker (limited), GitHub Actions

@@ -1,122 +1,112 @@
-# Spike 3: GitHub Copilot Coding Agent Findings
+# Spike 3: GitHub API & Copilot Coding Agent Findings
 
 ## Summary
 
-Researched GitHub Copilot coding agent APIs. **There is no dedicated coding agent API — it uses standard GitHub issue assignment. The newer "Tasks" UI has no public API. Template repo creation works via standard GitHub API.**
+Tested GitHub APIs for the full KISS workflow: template repos, issue/PR lifecycle, branch management, and file commits. **All standard GitHub APIs work. Copilot coding agent is a bonus (requires paid plan) but not required — standard APIs give us everything needed.**
 
-## How to Trigger the Coding Agent
+## Live API Test Results
 
-### Method 1: Issue Assignment (Primary, API-accessible)
+All tests run against `kltdwrds/kiss-spike` with a fine-grained PAT.
 
-The most reliable programmatic trigger. Assign the `copilot` user to a GitHub issue:
+| Operation | API | Status |
+|-----------|-----|--------|
+| Create issue | `POST /repos/{owner}/{repo}/issues` | WORKS |
+| Comment on issue/PR | `POST /repos/{owner}/{repo}/issues/{n}/comments` | WORKS |
+| Assign user to issue | `POST /repos/{owner}/{repo}/issues/{n}/assignees` | WORKS (copilot user requires paid plan) |
+| Make repo a template | `PATCH /repos/{owner}/{repo}` with `is_template: true` | WORKS |
+| Generate repo from template | `POST /repos/{owner}/{template}/generate` | WORKS |
+| Create branch | `POST /repos/{owner}/{repo}/git/refs` | WORKS |
+| Push file to branch | `PUT /repos/{owner}/{repo}/contents/{path}` | WORKS |
+| Create PR | `POST /repos/{owner}/{repo}/pulls` | WORKS |
+| Read PR details | `GET /repos/{owner}/{repo}/pulls/{n}` | WORKS |
+| Close PR/issue | `PATCH .../pulls/{n}` or `.../issues/{n}` | WORKS |
+| Delete branch | `DELETE /repos/{owner}/{repo}/git/refs/heads/{branch}` | WORKS |
+| Delete file | `DELETE /repos/{owner}/{repo}/contents/{path}` | WORKS |
+| Delete repo | `DELETE /repos/{owner}/{repo}` | Needs `delete_repo` scope |
+
+## KISS Flow via Standard GitHub APIs
+
+The key insight: **we don't need Copilot-specific APIs**. Standard GitHub APIs support the entire KISS workflow:
+
+```
+1. POST /repos/{template}/generate          → Create user's repo from template
+2. POST /repos/{repo}/git/refs              → Create feature branch
+3. PUT  /repos/{repo}/contents/{file}       → Push generated code (per file)
+4. POST /repos/{repo}/pulls                 → Open PR with generated code
+5. POST /repos/{repo}/issues/{n}/comments   → Add context/instructions
+6. GET  /repos/{repo}/pulls/{n}             → Monitor PR status
+7. (Optional) Assign Copilot for iteration  → POST .../assignees with copilot
+```
+
+### Alternative: Push via Git (faster for many files)
+
+For pushing multiple files (a full generated app), the Contents API requires one request per file. Better options:
 
 ```bash
-# Create an issue
-curl -X POST \
-  -H "Authorization: Bearer $GITHUB_TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/repos/{owner}/{repo}/issues" \
-  -d '{"title": "Add feature X", "body": "Detailed description..."}'
+# Option A: Git Data API (create tree + commit in one shot)
+POST /repos/{repo}/git/trees     → Create tree with all files
+POST /repos/{repo}/git/commits   → Create commit pointing to tree
+PATCH /repos/{repo}/git/refs     → Update branch ref
 
-# Assign Copilot
-curl -X POST \
-  -H "Authorization: Bearer $GITHUB_TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/repos/{owner}/{repo}/issues/{number}/assignees" \
-  -d '{"assignees":["copilot"]}'
+# Option B: Clone + push (simpler, uses git directly)
+git clone → write files → git add → git commit → git push
 ```
 
-### Method 2: @mention in Issue Comment
-`@copilot` in an issue body or comment also triggers the agent. Less programmatic but works.
+## Copilot Coding Agent
 
-### Method 3: Tasks UI (No Public API)
-GitHub's `github.com/copilot/tasks` page allows creating tasks through the UI. As of research cutoff, **no public REST API** exists for this flow. The UI likely uses internal/undocumented endpoints.
+### How It Works (from research + GitHub blog)
 
-## GraphQL Alternative
+- Triggered by assigning `copilot` (or `github`) to an issue, or @mentioning in comments
+- Uses GitHub Actions minutes + "premium requests"
+- Agent creates a branch, pushes commits, opens a PR
+- All activity uses standard GitHub events (no special Copilot webhooks)
+- New "Agents Panel" at `github.com/copilot/agents` for task management
+- MCP integration for extensibility (Playwright, custom servers)
 
-```graphql
-mutation {
-  addAssigneesToAssignable(input: {
-    assignableId: "<ISSUE_NODE_ID>",
-    assigneeIds: ["<COPILOT_BOT_NODE_ID>"]
-  }) {
-    assignable {
-      ... on Issue { id title }
-    }
-  }
-}
-```
+### Requirements
 
-Get Copilot's node ID:
-```bash
-curl -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/users/copilot
-# Use the "node_id" field from the response
-```
+- Copilot Pro+ or Enterprise plan
+- GitHub Actions enabled on the repo
+- `.github/copilot-setup-steps.yml` in the repo
 
-## Requirements
+### What We Couldn't Test
 
-- **Plan**: GitHub Copilot Enterprise or Copilot Pro+
-- **Repo settings**: GitHub Actions must be enabled
-- **Critical file**: `.github/copilot-setup-steps.yml` must exist in the repo
+- Assigning `copilot` to an issue returned empty assignees (account doesn't have Copilot coding agent)
+- The `copilot` user doesn't exist as a standard GitHub user (`/users/copilot` → 404)
+- Can't verify if the bot user is now `github` (which is an org, not a bot)
 
-```yaml
-# .github/copilot-setup-steps.yml
-steps:
-  - uses: actions/checkout@v4
-  - uses: actions/setup-node@v4
-    with:
-      node-version: '20'
-  - run: npm install
-```
+### Assessment for KISS
 
-## Webhook Events During Copilot Work
+**Copilot is optional, not required.** The KISS workflow works entirely with standard GitHub APIs:
 
-The agent uses standard GitHub events — no special Copilot-specific webhook types:
+| Approach | Initial Gen | Iteration | Latency | Cost |
+|----------|------------|-----------|---------|------|
+| Claude API + GitHub API | Claude generates code, push via API | New Claude call + push | ~15-30s | ~$0.05/gen |
+| Claude API + Copilot | Claude generates code, push via API | Assign Copilot to issues | 10-30min | $39/mo + gen |
+| Copilot only | Assign Copilot to initial issue | Assign Copilot to follow-ups | 10-30min | $39/mo |
 
-| Event | When |
-|-------|------|
-| `issues` (assigned) | Copilot assigned to issue |
-| `issue_comment` (created) | Copilot posts status updates |
-| `create` (branch) | Copilot creates working branch |
-| `push` | Copilot pushes commits |
-| `pull_request` (opened) | Copilot opens PR |
-| `check_run` / `check_suite` | CI runs on Copilot's PR |
+**Recommendation**: Use Claude API for generation + standard GitHub APIs for the git workflow. Copilot adds latency and cost without clear benefit for KISS's use case.
 
-Identify Copilot activity by checking `sender.login` in webhook payloads.
+## Token Permissions Needed
 
-## Template Repo Creation
+For a fine-grained PAT scoped to the KISS template repo:
 
-Standard GitHub API — works:
+| Permission | Level | For |
+|------------|-------|-----|
+| Contents | Read & Write | Push files, create branches |
+| Issues | Read & Write | Create issues, assign, comment |
+| Pull Requests | Read & Write | Create/read PRs |
+| Administration | Read & Write | Template repo management |
+| Actions | Read & Write | Trigger/monitor workflows |
+| Metadata | Read | Required base permission |
 
-```bash
-# Create repo from template
-POST /repos/{owner}/{template_repo}/generate
-Body: {"owner": "{your-username}", "name": "kiss-preview-123", "private": false}
-```
+For creating new repos from templates, the token also needs the `repo` scope or account-level permissions.
 
-## What's NOT Available via API
+## Template Repo Strategy
 
-1. No `/repos/{owner}/{repo}/copilot/tasks` endpoint
-2. No way to query coding agent session status
-3. No way to programmatically stop a running agent (except unassign/close issue)
-4. No API for the Tasks UI flow
-5. No coding agent-specific webhook events
+Tested and validated:
+1. `PATCH /repos/{owner}/{repo}` with `is_template: true` → mark repo as template
+2. `POST /repos/{owner}/{template}/generate` → create new repo from template
+3. New repo gets all template files, branches, and structure
 
-## Assessment
-
-**Automation feasibility: MODERATE**
-
-The Copilot coding agent is automatable through issue assignment, but:
-- **Latency**: Minutes to start working, potentially 10-30+ minutes for a PR
-- **Reliability**: Variable — depends on prompt quality and repo setup
-- **Control**: Limited — can't monitor progress, can't stop mid-run efficiently
-- **Cost**: Requires Copilot Enterprise ($39/user/month) or Copilot Pro+ ($39/user/month)
-
-**For KISS specifically**: Using Claude API directly for code generation (Spike 1) is likely faster, cheaper, and more controllable than routing through Copilot. Copilot could be useful for the "iteration" phase (user requests changes via issues) but adds latency and complexity.
-
-## Recommended Approach for KISS
-
-1. **Use Claude API directly** for initial code generation (faster, more control)
-2. **Skip Copilot for MVP** — the latency and lack of status API make it hard to provide a good UX
-3. **Consider Copilot later** for a "git-native" workflow where users iterate on generated code through issues
-4. **Template repos work** — use them for the initial project skeleton before AI fills in the code
+For KISS: maintain a template repo with the rwsdk skeleton (package.json, vite.config.mts, tsconfig.json, wrangler.jsonc, src/client.tsx). Generate per-user repos from it, then push the Claude-generated app code.
